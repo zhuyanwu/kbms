@@ -1,0 +1,122 @@
+package com.shuxin.service.impl.ruleengine;
+
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import com.shuxin.commons.utils.Charsets;
+import com.shuxin.commons.utils.StringUtils;
+import com.shuxin.commons.utils.ToolUtils;
+import com.shuxin.mapper.MIDiagnosisMapper;
+import com.shuxin.mapper.ruleengine.HospitalClaimDetailMapper;
+import com.shuxin.mapper.ruleengine.RuleMGBZYDFYZESHMapper;
+import com.shuxin.model.RuleTableInfo;
+import com.shuxin.model.ruleengine.HospitalClaim;
+import com.shuxin.model.ruleengine.HospitalClaimDetail;
+import com.shuxin.model.ruleengine.ViolationDetail;
+import com.shuxin.service.ruleengine.IAnalysisRuleService;
+/**
+ * 
+ *门规综合病种费用总额审核
+ */
+@Service
+public class RuleMGBZYDFYZESHServiceImpl implements IAnalysisRuleService {
+
+	@Autowired
+	private RuleMGBZYDFYZESHMapper ruleMGBZYDFYZESHMapper;
+	
+	@Autowired
+	private HospitalClaimDetailMapper hospitalClaimDetailMapper;
+	
+	@Autowired
+	private MIDiagnosisMapper mIDiagnosisMapper;
+	
+	@Override
+	public List<ViolationDetail> executeRule(RuleTableInfo rule, HospitalClaim hospitalClaim,
+			List<HospitalClaimDetail> hospitalClaimDetails) {
+		
+		
+		//只审核门规病患者
+		if(!"13".equals(hospitalClaim.getMedTreatmentMode()))
+		{
+			return null;
+		}
+		
+		
+		
+		List<String> diagnosisCodeList = new ArrayList<String>();
+		
+		for(HospitalClaimDetail hospitalClaimDetail:hospitalClaimDetails)
+		{
+			if(!StringUtils.isEmpty(hospitalClaimDetail.getMgbz())
+				&&!diagnosisCodeList.contains(hospitalClaimDetail.getMgbz()))
+			{
+				diagnosisCodeList.add(hospitalClaimDetail.getMgbz());
+			}
+		}
+		
+		
+		if(diagnosisCodeList.size()==0)
+		{
+			return null;
+		}
+		
+		int aiagnosisCodeCount=mIDiagnosisMapper.selectBZ31DiagnosisCodeCount(diagnosisCodeList);
+		if(aiagnosisCodeCount==0)
+		{
+			return null;
+		}
+		else if(aiagnosisCodeCount>2)
+		{
+			aiagnosisCodeCount=2;
+		}
+		
+		Map<String, String> multipleSpecialDiseasesMap = ruleMGBZYDFYZESHMapper.selectSpecialMultipleDiseasesInfo(aiagnosisCodeCount);
+		
+		if(multipleSpecialDiseasesMap.size()==0)
+		{
+			return null;
+		}
+		
+		Map<String, String> paramMap=new HashMap<String,String>();
+		paramMap.put("patCode", hospitalClaim.getPatCode());		
+		BigDecimal monthAmount=new BigDecimal(0);
+		String tip="";
+		BigDecimal specialMonthAmount=new BigDecimal(multipleSpecialDiseasesMap.get("YXDJE"));
+		paramMap.put("dateType", "month");
+	
+		for(String mgbz:diagnosisCodeList)
+		{
+			paramMap.put("diaInHospCode", mgbz);
+			
+		
+			monthAmount=hospitalClaimDetailMapper.selectSpecialPatientDrugAmount(paramMap);
+			if(monthAmount.compareTo(specialMonthAmount)>0)
+			{
+				tip=multipleSpecialDiseasesMap.get("YTSXX");
+				break;
+			}
+		}
+		
+		List<ViolationDetail> list= null;
+		ViolationDetail violationDetail =null;
+		
+		if(!StringUtils.isEmpty(tip))
+		{
+			violationDetail=ToolUtils.getViolationDetail2(rule, hospitalClaim, rule.getId(),rule.getMenuName(), tip);	
+			if(list==null)
+			{
+				list= new ArrayList<ViolationDetail>();
+			}
+			list.add(violationDetail);
+		}			
+		
+		return list;
+	}
+
+}

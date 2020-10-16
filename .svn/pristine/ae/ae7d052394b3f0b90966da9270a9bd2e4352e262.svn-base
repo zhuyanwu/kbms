@@ -1,0 +1,130 @@
+package com.shuxin.commons.utils;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Date;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+import javax.validation.ConstraintViolation;
+import javax.validation.Validation;
+
+import org.springframework.context.support.StaticApplicationContext;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyEmitterReturnValueHandler;
+
+import com.shuxin.model.ruleengine.HospitalClaim;
+import com.shuxin.model.ruleengine.HospitalClaimDetail;
+import com.shuxin.model.ruleengine.HospitalClaimDetailOpt;
+import com.shuxin.model.ruleengine.HospitalClaimOpt;
+import com.shuxin.model.ruleengine.RespInfo;
+import com.shuxin.model.ruleengine.ReturnResult;
+import com.shuxin.model.ruleengine.ViolationDetail;
+import com.shuxin.service.ruleengine.IHospitalClaimDetailOptService;
+import com.shuxin.service.ruleengine.IHospitalClaimOptService;
+import com.shuxin.service.ruleengine.IViolationDetailService;
+
+public class ThreadPoolUtil {
+	
+	
+	private static ExecutorService threadPool = Executors.newFixedThreadPool(10);
+
+	/**
+	 * 保存请求的历史记录
+	 * @param hospitalClaim
+	 * @param hospitalClaimDetails
+	 */
+	public static void handleHospitalClaimOpt(final HospitalClaim hospitalClaim,final List<HospitalClaimDetail> hospitalClaimDetails)
+	{
+		final List<HospitalClaimDetail> tempList = new ArrayList<HospitalClaimDetail>();
+		tempList.addAll(hospitalClaimDetails);
+		threadPool.execute(new Runnable() {
+			@Override
+			public void run() {
+				
+				HospitalClaimOpt hospitalClaimOpt=BeanUtils.copy(hospitalClaim,HospitalClaimOpt.class);
+				
+				Date date = new Date();
+				
+				IHospitalClaimOptService hospitalClaimOptService =	(IHospitalClaimOptService)SpringContextHelper.getBean("hospitalClaimOptServiceImpl");
+				IHospitalClaimDetailOptService hospitalClaimDetailOptService =	(IHospitalClaimDetailOptService)SpringContextHelper.getBean("hospitalClaimDetailOptServiceImpl");
+		        String optId=UUID.randomUUID().toString().replace("-", "");
+		        hospitalClaimOpt.setOptId(optId);
+		        hospitalClaimOpt.setOptDate(date);
+		        hospitalClaimOptService.insert(hospitalClaimOpt);
+		        for(HospitalClaimDetail hospitalClaimDetail:tempList)
+		        {
+		        	HospitalClaimDetailOpt hospitalClaimDetailOpt=BeanUtils.copy(hospitalClaimDetail,HospitalClaimDetailOpt.class);
+		        	hospitalClaimDetailOpt.setOptId(optId);
+		        	hospitalClaimDetailOpt.setOptDate(date);
+		        	hospitalClaimDetailOptService.insert(hospitalClaimDetailOpt);
+		        }
+			}
+		});
+	}
+	
+	
+	/**
+	 * 保存审核结果
+	 * @param hospitalClaim
+	 * @param hospitalClaimDetails
+	 * @param violationDetails
+	 */
+	public static void handleViolationDetail(final HospitalClaim hospitalClaim,final List<HospitalClaimDetail> hospitalClaimDetails,
+			final List<ViolationDetail> violationDetails)
+	{
+		threadPool.execute(new Runnable() {
+			@Override
+			public void run() {
+				IViolationDetailService violationDetailService =	(IViolationDetailService)SpringContextHelper.getBean("violationDetailServiceImpl");
+				violationDetailService.editViolationDetail(hospitalClaim, hospitalClaimDetails, violationDetails);
+			}
+		});
+	}
+	
+	
+	public static boolean baseCheckInputVOList(
+			List<HospitalClaimDetail> hospitalClaimDetails,
+			ReturnResult returnResult)
+	{
+		final List<Set<ConstraintViolation<HospitalClaimDetail>>> list=Collections.synchronizedList(new ArrayList<Set<ConstraintViolation<HospitalClaimDetail>>>());
+		for(final HospitalClaimDetail hospitalClaimDetail : hospitalClaimDetails)
+		{
+			threadPool.submit(new Runnable() {
+				@Override
+				public void run() {
+					Set<ConstraintViolation<HospitalClaimDetail>> validResult = Validation.buildDefaultValidatorFactory().getValidator()
+					         .validate(hospitalClaimDetail);
+					list.add(validResult);
+				}
+				
+			});
+		}
+		while(list.size()<hospitalClaimDetails.size());
+		for(Set<ConstraintViolation<HospitalClaimDetail>> validResult:list)
+		{
+			if (null != validResult && validResult.size() > 0) {
+			    StringBuilder sb = new StringBuilder();
+			    for (Iterator<ConstraintViolation<HospitalClaimDetail>> iterator = validResult.iterator(); iterator.hasNext();) {
+			        ConstraintViolation<HospitalClaimDetail> constraintViolation = (ConstraintViolation<HospitalClaimDetail>) iterator.next();
+			         //这里只取了字段名，如果需要其他信息可以自己处理
+			        sb.append(constraintViolation.getMessage()).append("、");
+			    }
+				if(sb.lastIndexOf("、") == sb.length()-1){
+				    sb.delete(sb.length()-1, sb.length());
+				}
+				RespInfo respInfo = new RespInfo();
+				respInfo.setResultCode("0001");
+				respInfo.setResultMsg("请检查传入的数据格式异常:"+sb.toString());
+				respInfo.setResultStatus("F");
+				returnResult.setRespInfo(respInfo);
+				return false;
+			}
+		}
+		
+		return true;
+	}
+}
